@@ -8,28 +8,39 @@ import hashlib
 import secrets
 import requests
 from datetime import datetime
-
+import argparse
+from pathlib import Path
 VERSION = "prerelease"
 
 inst_name = "unknown"
 db_name = "unknown"
 port = 2077
 tba_key = "unknown"
+testing = False
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-t", "--test", action="store_true")
+args = parser.parse_args()
+testing = args.test
 
 app = Flask(__name__)
 CORS(app)
 
+
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
 
+
 def generate_join_key() -> str:
     return secrets.token_hex(3).upper()
+
 
 def get_db_connection():
     conn = sqlite3.connect(db_name + ".db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
 
 def init_db():
     with get_db_connection() as conn:
@@ -65,6 +76,7 @@ def init_db():
         )
         conn.commit()
 
+
 def is_leader(group_id, member_id):
     if not member_id:
         return False
@@ -75,6 +87,7 @@ def is_leader(group_id, member_id):
     conn.close()
     return group and group["leader_id"] == int(member_id)
 
+
 @app.route("/info", methods=["GET"])
 def info():
     return {
@@ -82,12 +95,16 @@ def info():
         "version": VERSION,
     }
 
+
 @app.route("/groups", methods=["POST"])
 def create_group():
     data = request.json
     group_name = data.get("name")
     event_key = data.get("event_key")
     team_number = data.get("team_number")
+
+    if testing and team_number != "2077":
+        return jsonify("Team num must be 2077 for testing"), 401
 
     leader_username = data.get("leader_username")
     leader_display_name = data.get("leader_display_name")
@@ -102,7 +119,7 @@ def create_group():
     existing_group = conn.execute(
         "SELECT id FROM groups WHERE group_name = ?", (group_name.strip(),)
     ).fetchone()
-    
+
     if existing_group:
         conn.close()
         return jsonify({"error": f"A group named '{group_name}' has already been created."}), 409
@@ -130,7 +147,7 @@ def create_group():
             "UPDATE groups SET leader_id = ? WHERE id = ?", (
                 leader_id, group_id)
         )
-        
+
         member = conn.execute(
             """
             SELECT m.id, m.username, m.display_name, m.status, m.job, m.role, m.location, 
@@ -154,6 +171,7 @@ def create_group():
     finally:
         conn.close()
 
+
 @app.route("/groups/join", methods=["POST"])
 def add_member_by_code():
     data = request.json
@@ -174,7 +192,8 @@ def add_member_by_code():
 
     try:
         group = conn.execute(
-            "SELECT id FROM groups WHERE join_key = ?", (join_key.upper().strip(),)
+            "SELECT id FROM groups WHERE join_key = ?", (join_key.upper(
+            ).strip(),)
         ).fetchone()
 
         if not group:
@@ -200,7 +219,7 @@ def add_member_by_code():
             (group_id, username.lower().strip(), display_name,
              hash_pin(pin), status, job, role, location),
         )
-        
+
         member = conn.execute(
             """
             SELECT m.id, m.username, m.display_name, m.status, m.job, m.role, m.location, 
@@ -219,6 +238,7 @@ def add_member_by_code():
         return jsonify({"error": "Database constraint violation occurred."}), 409
     finally:
         conn.close()
+
 
 @app.route("/groups/<join_key>", methods=["PUT"])
 def update_group(join_key):
@@ -251,6 +271,7 @@ def update_group(join_key):
     conn.close()
 
     return jsonify({"message": "Group updated successfully"})
+
 
 @app.route("/groups/<join_key>/members/<int:member_id>/reset-pin", methods=["PUT"])
 def reset_member_pin(join_key, member_id):
@@ -294,6 +315,7 @@ def reset_member_pin(join_key, member_id):
 
     return jsonify({"message": f"Pin reset successfully for member {member_id}"})
 
+
 @app.route("/groups/<join_key>/members", methods=["GET"])
 def get_members(join_key):
     requestor_username = request.headers.get("X-Username")
@@ -329,6 +351,7 @@ def get_members(join_key):
     conn.close()
 
     return jsonify([dict(m) for m in members])
+
 
 @app.route("/groups/<join_key>/members/status", methods=["PUT"])
 def update_member_status(join_key):
@@ -391,6 +414,7 @@ def update_member_status(join_key):
         "location": new_location
     }), 200
 
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
@@ -420,25 +444,63 @@ def login():
         return jsonify(dict(member)), 200
     else:
         return jsonify({"error": "Invalid username or PIN"}), 401
-    
+
+
 @app.route("/tba/teaminfo/<int:team_number>", methods=["GET"])
 def team_info(team_number):
-    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc"+str(team_number), headers={"X-TBA-Auth-Key": tba_key.strip()})
+    if testing:
+        if str(team_number) != "2077":
+            return jsonify("Team num must be 2077 when testing"), 401
+        with open("./example responses/2077info.json", "r") as file:
+            data = json.load(file)
+        return jsonify(data), 200
+    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" +
+                            str(team_number), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
+
 
 @app.route("/tba/avatar/<int:team_number>", methods=["GET"])
 def team_avatar(team_number):
-    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) +"/media/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()})
+    if testing:
+        if str(team_number) != "2077":
+            return jsonify("Team num must be 2077 when testing"), 401
+        with open("./example responses/2077media.json", "r") as file:
+            data = json.load(file)
+        return jsonify(data), 200
+    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) +
+                            "/media/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
+
 
 @app.route("/tba/<int:team_number>/events", methods=["GET"])
 def get_events(team_number):
-    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) + "/events/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()}) 
+    if testing:
+        if str(team_number) != "2077":
+            return jsonify("Team num must be 2077 when testing"), 401
+        with open("./example responses/2077events.json", "r") as file:
+            data = json.load(file)
+        return jsonify(data), 200
+    
+    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) +
+                            "/events/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
+
 
 @app.route("/tba/matches/<event_key>/<int:team_number>", methods=["GET"])
 def get_matches(event_key, team_number):
-    response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) + "/event/" + event_key + "/matches/simple", headers={"X-TBA-Auth-Key": tba_key.strip()})
+    if testing and event_key == "2026wiply":
+        with open("./example responses/2026wiply.json", "r") as file:
+            data = json.load(file)
+        return jsonify(data), 200
+    if testing and event_key == "2026wimuk":
+        with open("./example responses/2026wimuk.json", "r") as file:
+            data = json.load(file)
+        return jsonify(data), 200
+
+    response = requests.get(
+        f"https://www.thebluealliance.com/api/v3/team/frc{team_number}/event/{event_key}/matches",
+        headers={"X-TBA-Auth-Key": tba_key.strip()},
+    )
     return jsonify(response.json()), response.status_code
 
 def run_first_run():
@@ -446,7 +508,7 @@ def run_first_run():
     a = input("Instance name (Example: Team XXXXX LT Server): ")
     b = input("Database filename (do not include a file extension): ")
     c = input("Port to use (leave blank for default port of 2077): ")
-    d = input("The Blue Alliance APIv3 key:" )
+    d = input("The Blue Alliance APIv3 key:")
     print()
     print("Do these settings look right?")
     print("Instance name: " + a)
@@ -471,6 +533,7 @@ def run_first_run():
     else:
         run_first_run()
 
+
 def init_config():
     global inst_name, db_name, port, tba_key
     if not os.path.exists("./about.json"):
@@ -484,6 +547,7 @@ def init_config():
             port = data["port"]
             tba_key = data["tba api key"]
 
+
 def main():
     init_config()
     init_db()
@@ -491,6 +555,7 @@ def main():
           "Laser Tracker Server v" + VERSION + ": " + inst_name)
 
     app.run(port=port, host="0.0.0.0")
+
 
 if __name__ == "__main__":
     main()
