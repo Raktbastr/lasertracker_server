@@ -10,6 +10,7 @@ import requests
 from datetime import datetime
 import argparse
 from pathlib import Path
+
 VERSION = "prerelease"
 
 inst_name = "unknown"
@@ -51,9 +52,7 @@ def init_db():
                 group_name TEXT NOT NULL UNIQUE,
                 event_key TEXT NOT NULL,
                 team_number INTEGER,
-                join_key TEXT NOT NULL UNIQUE,
-                leader_id INTEGER,
-                FOREIGN KEY (leader_id) REFERENCES members(id) ON DELETE SET NULL
+                join_key TEXT NOT NULL UNIQUE
             )
         """
         )
@@ -65,10 +64,10 @@ def init_db():
                 username TEXT NOT NULL,
                 display_name TEXT NOT NULL,
                 pin_hash TEXT NOT NULL,
-                status TEXT NOT NULL,
                 job TEXT NOT NULL,
                 role TEXT NOT NULL,
                 location TEXT NOT NULL,
+                is_admin INTEGER DEFAULT 0,
                 FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
                 UNIQUE(group_id, username)
             )
@@ -77,15 +76,36 @@ def init_db():
         conn.commit()
 
 
-def is_leader(group_id, member_id):
-    if not member_id:
+def is_admin(group_id, username, pin):
+    if not username:
         return False
     conn = get_db_connection()
-    group = conn.execute(
-        "SELECT leader_id FROM groups WHERE id = ?", (group_id,)
+    member = conn.execute(
+        "SELECT pin_hash, is_admin FROM members WHERE group_id = ? AND username = ?", 
+        (group_id, username.lower().strip())
     ).fetchone()
     conn.close()
-    return group and group["leader_id"] == int(member_id)
+    return bool(member and member["is_admin"] == 1 and member["pin_hash"] == hash_pin(pin))
+
+
+@app.route("/groups/<join_key>/admin-check", methods=["GET"])
+def check_admin_status(join_key):
+    requestor_user = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_user or not requestor_pin:
+        return jsonify({"error": "Missing X-Username or X-Pin header"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE join_key = ?", (join_key.upper().strip(),)
+    ).fetchone()
+    conn.close()
+
+    if not group:
+        return jsonify({"error": "Group not found"}), 404
+
+    return jsonify({"is_admin": is_admin(group["id"], requestor_user, requestor_pin)}), 200
 
 
 @app.route("/info", methods=["GET"])
@@ -135,22 +155,17 @@ def create_group():
 
         cursor.execute(
             """
-            INSERT INTO members (group_id, username, display_name, pin_hash, status, job, role, location)
+            INSERT INTO members (group_id, username, display_name, pin_hash, job, role, location, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (group_id, leader_username.lower().strip(), leader_display_name, hash_pin(leader_pin),
-             "Logged In", "Lead Coach", "Lead Coach", "Unknown"),
+             "Unknown", "Lead Coach 1", "Unknown", 1),
         )
         leader_id = cursor.lastrowid
 
-        cursor.execute(
-            "UPDATE groups SET leader_id = ? WHERE id = ?", (
-                leader_id, group_id)
-        )
-
         member = conn.execute(
             """
-            SELECT m.id, m.username, m.display_name, m.status, m.job, m.role, m.location, 
+            SELECT m.id, m.username, m.display_name, m.job, m.role, m.location, m.is_admin,
                    g.group_name, g.event_key, g.team_number, g.join_key 
             FROM members m 
             JOIN groups g ON m.group_id = g.id 
@@ -179,7 +194,6 @@ def add_member_by_code():
     username = data.get("username")
     display_name = data.get("display_name")
     pin = data.get("pin")
-    status = data.get("status", "Logged In")
     job = data.get("job", "Unknown")
     role = data.get("role", "Unknown")
     location = data.get("location", "Unknown")
@@ -192,8 +206,7 @@ def add_member_by_code():
 
     try:
         group = conn.execute(
-            "SELECT id FROM groups WHERE join_key = ?", (join_key.upper(
-            ).strip(),)
+            "SELECT id FROM groups WHERE join_key = ?", (join_key.upper().strip(),)
         ).fetchone()
 
         if not group:
@@ -213,16 +226,15 @@ def add_member_by_code():
 
         cursor.execute(
             """
-            INSERT INTO members (group_id, username, display_name, pin_hash, status, job, role, location)
+            INSERT INTO members (group_id, username, display_name, pin_hash, job, role, location, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            (group_id, username.lower().strip(), display_name,
-             hash_pin(pin), status, job, role, location),
+            (group_id, username.lower().strip(), display_name, hash_pin(pin), job, role, location, 0),
         )
 
         member = conn.execute(
             """
-            SELECT m.id, m.username, m.display_name, m.status, m.job, m.role, m.location, 
+            SELECT m.id, m.username, m.display_name, m.job, m.role, m.location, m.is_admin,
                    g.group_name, g.event_key, g.team_number, g.join_key 
             FROM members m 
             JOIN groups g ON m.group_id = g.id 
@@ -243,7 +255,11 @@ def add_member_by_code():
 @app.route("/groups/<join_key>", methods=["PUT"])
 def update_group(join_key):
     data = request.json
-    requestor_id = request.headers.get("X-Member-ID")
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
 
     conn = get_db_connection()
     group = conn.execute(
@@ -256,9 +272,9 @@ def update_group(join_key):
 
     group_id = group["id"]
 
-    if not is_leader(group_id, requestor_id):
+    if not is_admin(group_id, requestor_username, requestor_pin):
         conn.close()
-        return jsonify({"error": "Unauthorized. Action requires leader privileges."}), 403
+        return jsonify({"error": "Unauthorized. Action requires admin privileges."}), 403
 
     group_name = data.get("group_name")
     event_key = data.get("event_key")
@@ -273,14 +289,18 @@ def update_group(join_key):
     return jsonify({"message": "Group updated successfully"})
 
 
-@app.route("/groups/<join_key>/members/<int:member_id>/reset-pin", methods=["PUT"])
-def reset_member_pin(join_key, member_id):
+@app.route("/groups/<join_key>/members/<target_username>/reset-pin", methods=["PUT"])
+def reset_member_pin(join_key, target_username):
     data = request.json
-    requestor_id = request.headers.get("X-Member-ID")
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
     new_pin = data.get("new_pin")
 
-    if not new_pin:
-        return jsonify({"error": "New pin is required"}), 400
+    if not requestor_username:
+        return jsonify({"error": "Missing X-Username header"}), 401
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
 
     conn = get_db_connection()
     group = conn.execute(
@@ -293,27 +313,29 @@ def reset_member_pin(join_key, member_id):
 
     group_id = group["id"]
 
-    if not is_leader(group_id, requestor_id):
+    is_self = requestor_username.lower().strip() == target_username.lower().strip()
+    
+    if not (is_self or is_admin(group_id, requestor_username, requestor_pin)):
         conn.close()
-        return jsonify({"error": "Unauthorized. Action requires leader privileges."}), 403
+        return jsonify({"error": "Unauthorized. Action requires admin privileges or matching user."}), 403
 
     member = conn.execute(
-        "SELECT id FROM members WHERE id = ? AND group_id = ?", (
-            member_id, group_id)
+        "SELECT id FROM members WHERE username = ? AND group_id = ?", 
+        (target_username.lower().strip(), group_id)
     ).fetchone()
 
     if not member:
         conn.close()
-        return jsonify({"error": "Member not found in this group"}), 404
+        return jsonify({"error": "Target member not found in this group"}), 404
 
     conn.execute(
-        "UPDATE members SET pin_hash = ? WHERE id = ?", (hash_pin(
-            new_pin), member_id)
+        "UPDATE members SET pin_hash = ? WHERE username = ? AND group_id = ?", 
+        (hash_pin(new_pin), target_username.lower().strip(), group_id)
     )
     conn.commit()
     conn.close()
 
-    return jsonify({"message": f"Pin reset successfully for member {member_id}"})
+    return jsonify({"message": "Pin reset successfully for user " + target_username})
 
 
 @app.route("/groups/<join_key>/members", methods=["GET"])
@@ -345,7 +367,7 @@ def get_members(join_key):
         return jsonify({"error": "Invalid credentials for this group"}), 403
 
     members = conn.execute(
-        "SELECT id, username, display_name, status, job, role, location FROM members WHERE group_id = ?",
+        "SELECT id, username, display_name, job, role, location, is_admin FROM members WHERE group_id = ?",
         (group_id,),
     ).fetchall()
     conn.close()
@@ -362,13 +384,11 @@ def update_member_status(join_key):
         return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
 
     data = request.json
-    status = data.get("status")
     job = data.get("job")
-    role = data.get("role")
     location = data.get("location")
 
-    if not any([status, job, role, location]):
-        return jsonify({"error": "At least one status field (status, job, role, location) must be provided to update"}), 400
+    if not any([job, location]):
+        return jsonify({"error": "At least one status field (job, location) must be provided to update"}), 400
 
     conn = get_db_connection()
     group = conn.execute(
@@ -382,7 +402,7 @@ def update_member_status(join_key):
     group_id = group["id"]
 
     member = conn.execute(
-        "SELECT id, status, job, role, location FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
+        "SELECT id, job, location FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
         (group_id, requestor_username.lower().strip(), hash_pin(requestor_pin))
     ).fetchone()
 
@@ -390,30 +410,72 @@ def update_member_status(join_key):
         conn.close()
         return jsonify({"error": "Invalid credentials for this group"}), 403
 
-    new_status = status if status is not None else member["status"]
     new_job = job if job is not None else member["job"]
-    new_role = role if role is not None else member["role"]
     new_location = location if location is not None else member["location"]
 
     conn.execute(
-        """
-        UPDATE members 
-        SET status = ?, job = ?, role = ?, location = ? 
-        WHERE id = ?
-        """,
-        (new_status, new_job, new_role, new_location, member["id"])
+        """UPDATE members SET job = ?, location = ? WHERE id = ?""",
+        (new_job, new_location, member["id"])
     )
     conn.commit()
     conn.close()
 
     return jsonify({
         "message": "Status updated successfully",
-        "status": new_status,
         "job": new_job,
-        "role": new_role,
         "location": new_location
     }), 200
 
+@app.route("/groups/<join_key>/members/role", methods=["PUT"])
+def update_member_role(join_key):
+    requestor_username = request.headers.get("X-Username")
+    name_to_change = request.headers.get("X-Target")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    data = request.json
+    role = data.get("new_role")
+
+    if not role:
+        return jsonify({"error": "Role field must be provided to update"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE join_key = ?", (join_key.upper().strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    if not is_admin(group_id, requestor_username, requestor_pin):
+        conn.close()
+        return jsonify({"error": "Unauthorized. Action requires admin privileges"}), 403
+
+    member = conn.execute(
+        "SELECT id, role FROM members WHERE group_id = ? AND username = ?",
+        (group_id, str(name_to_change).lower().strip())
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+    
+    conn.execute(
+        "UPDATE members SET role = ? WHERE id = ?",
+        (role, member["id"])
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "message": "Status updated successfully",
+        "role": role
+    }), 200
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -429,7 +491,7 @@ def login():
 
     member = conn.execute(
         """
-        SELECT m.id, m.display_name, m.job, m.role, m.location, m.status, m.username, 
+        SELECT m.id, m.display_name, m.job, m.role, m.location, m.username, m.is_admin,
                g.group_name, g.event_key, g.team_number, g.join_key 
         FROM members m
         JOIN groups g ON m.group_id = g.id
@@ -445,6 +507,57 @@ def login():
     else:
         return jsonify({"error": "Invalid username or PIN"}), 401
 
+@app.route("/groups/<join_key>/members/change-admin", methods=["PUT"])
+def change_admin(join_key):
+    data = request.json
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+    target_username = request.headers.get("X-Target")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    data = request.json
+    admin_status = data.get("is_admin")
+
+    if not target_username:
+        return jsonify({"error": "Target username must be provided to update"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE join_key = ?", (join_key.upper().strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    if not is_admin(group_id, requestor_username, requestor_pin):
+        conn.close()
+        return jsonify({"error": "Unauthorized. Action requires admin privileges"}), 403
+
+    member = conn.execute(
+        "SELECT id FROM members WHERE group_id = ? AND username = ?",
+        (group_id, target_username.lower().strip())
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+    
+    conn.execute(
+        "UPDATE members SET is_admin = ? WHERE id = ?",
+        (admin_status, member["id"])
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "message": "Admin status updated successfully",
+        "is_admin": admin_status
+    }), 200
 
 @app.route("/tba/teaminfo/<int:team_number>", methods=["GET"])
 def team_info(team_number):
@@ -508,19 +621,19 @@ def run_first_run():
     a = input("Instance name (Example: Team XXXXX LT Server): ")
     b = input("Database filename (do not include a file extension): ")
     c = input("Port to use (leave blank for default port of 2077): ")
+    if c == "":
+        c = 2077
+    else:
+        c = int(c)
     d = input("The Blue Alliance APIv3 key:")
     print()
     print("Do these settings look right?")
     print("Instance name: " + a)
     print("Database filename: " + b)
-    print("Port: " + c)
+    print("Port: " + str(c))
     print("API Key: " + d)
     x = input("Y/N: ")
     if x.lower() == "y":
-        if c == "":
-            c = 2077
-        else:
-            c = int(c)
         data = {
             "instance name": a,
             "version": VERSION,
