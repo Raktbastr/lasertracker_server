@@ -1,2 +1,4 @@
 *.db
 about.json
+/.vscode
+/.venv
