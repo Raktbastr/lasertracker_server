@@ -509,14 +509,13 @@ def fetch_logs(group_key):
     group = conn.execute(
         "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
     ).fetchone()
-    conn.close()
 
     if not group:
         return jsonify({"error": "Group not found"}), 404
     
     member = conn.execute(
         "SELECT id, job, location FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
-        (group_key, requestor_username.lower().strip(), hash_pin(requestor_pin))
+        (group["id"], requestor_username.lower().strip(), hash_pin(requestor_pin))
     ).fetchone()
 
     if not member:
@@ -524,7 +523,7 @@ def fetch_logs(group_key):
         return jsonify({"error": "Invalid credentials for this group"}), 403
     
     group_log = conn.execute(
-        "SELECT * FROM logs WHERE group_key = ?", (group_key.upper().strip())
+        "SELECT * FROM logs WHERE group_key = ?", (group_key.upper().strip(),)
     ).fetchall()
     conn.close()
     
@@ -571,7 +570,7 @@ def login():
         """,
         (group_key.upper().strip(), username.lower().strip(), hash_pin(pin)),
     ).fetchone()
-
+    
     conn.close()
 
     if member:
