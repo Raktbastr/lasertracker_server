@@ -10,6 +10,8 @@ import requests
 from datetime import datetime
 import argparse
 from pathlib import Path
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 VERSION = "prerelease"
 
@@ -27,6 +29,12 @@ testing = args.test
 app = Flask(__name__)
 CORS(app)
 
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    storage_uri="memory://",
+    default_limits=["200 per minute"]
+)
 
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
@@ -613,6 +621,7 @@ def login():
 
 
 @app.route("/tba/teaminfo/<int:team_number>", methods=["GET"])
+@limiter.limit("30 per minute")
 def team_info(team_number):
     if testing:
         if str(team_number) != "2077":
@@ -626,6 +635,7 @@ def team_info(team_number):
 
 
 @app.route("/tba/avatar/<int:team_number>", methods=["GET"])
+@limiter.limit("30 per minute")
 def team_avatar(team_number):
     if testing:
         if str(team_number) != "2077":
@@ -639,6 +649,7 @@ def team_avatar(team_number):
 
 
 @app.route("/tba/<int:team_number>/events", methods=["GET"])
+@limiter.limit("30 per minute")
 def get_events(team_number):
     if testing:
         if str(team_number) != "2077":
@@ -653,6 +664,7 @@ def get_events(team_number):
 
 
 @app.route("/tba/matches/<event_key>/<int:team_number>", methods=["GET"])
+@limiter.limit("30 per minute")
 def get_matches(event_key, team_number):
     if testing and event_key == "2026wiply":
         with open("./example responses/2026wiply.json", "r") as file:
@@ -670,6 +682,7 @@ def get_matches(event_key, team_number):
 
 
 @app.route("/tba/event/<event_key>/stream", methods=["GET"])
+@limiter.limit("30 per minute")
 def get_current_stream(event_key):
     response = requests.get(f"https://www.thebluealliance.com/api/v3/event/{event_key}",
                             headers={"X-TBA-Auth-Key": tba_key.strip()})
