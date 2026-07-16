@@ -31,25 +31,29 @@ CORS(app)
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
 
+
 def is_admin(group_id, username, pin):
     if not username:
         return False
     conn = get_db_connection()
     member = conn.execute(
-        "SELECT pin_hash, is_admin FROM members WHERE group_id = ? AND username = ?", 
+        "SELECT pin_hash, is_admin FROM members WHERE group_id = ? AND username = ?",
         (group_id, username.lower().strip())
     ).fetchone()
     conn.close()
     return bool(member and member["is_admin"] == 1 and member["pin_hash"] == hash_pin(pin))
 
+
 def generate_group_key() -> str:
     return secrets.token_hex(3).upper()
+
 
 def get_db_connection():
     conn = sqlite3.connect(db_name + ".db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
 
 def init_db():
     with get_db_connection() as conn:
@@ -93,24 +97,29 @@ def init_db():
         )
         conn.commit()
 
+
 def add_log_entry(group_key, username, action, timestamp):
     if not all([username, group_key, action]):
         return False
     try:
         conn = get_db_connection()
         conn.execute(
-            "INSERT INTO logs (group_key, username, action, timestamp) VALUES (?, ?, ?, ?)", (group_key, username, action, timestamp),
+            "INSERT INTO logs (group_key, username, action, timestamp) VALUES (?, ?, ?, ?)", (
+                group_key, username, action, timestamp),
         )
         conn.commit()
         return True
     except Exception as e:
         conn.rollback()
         with open(timestamp + " Failed Log.txt") as file:
-            file.write("There was an error processing this log request. It may not have been added to the database.")
-            file.write(group_key + " " + username + " " + action + " " + timestamp)
+            file.write(
+                "There was an error processing this log request. It may not have been added to the database.")
+            file.write(group_key + " " + username +
+                       " " + action + " " + timestamp)
         return False
     finally:
-        conn.close() 
+        conn.close()
+
 
 @app.route("/info", methods=["GET"])
 def info():
@@ -119,7 +128,8 @@ def info():
         "version": VERSION,
     }
 
-@app.route("/groups", methods=["POST"]) 
+
+@app.route("/groups", methods=["POST"])
 def create_group():
     data = request.json
     group_name = data.get("name")
@@ -178,7 +188,8 @@ def create_group():
         ).fetchone()
 
         conn.commit()
-        add_log_entry(group_key, leader_username, f"Created group '{group_name}'", datetime.now().timestamp())
+        add_log_entry(group_key, leader_username,
+                      f"Created group '{group_name}'", datetime.now().timestamp())
         return jsonify(dict(member)), 201
 
     except sqlite3.IntegrityError:
@@ -189,6 +200,7 @@ def create_group():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
 
 @app.route("/groups/join", methods=["POST"])
 def add_member():
@@ -209,7 +221,8 @@ def add_member():
 
     try:
         group = conn.execute(
-            "SELECT id, group_name FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+            "SELECT id, group_name FROM groups WHERE group_key = ?", (group_key.upper(
+            ).strip(),)
         ).fetchone()
 
         if not group:
@@ -233,7 +246,8 @@ def add_member():
             INSERT INTO members (group_id, username, display_name, pin_hash, job, role, location, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            (group_id, username.lower().strip(), display_name, hash_pin(pin), job, role, location, 0),
+            (group_id, username.lower().strip(), display_name,
+             hash_pin(pin), job, role, location, 0),
         )
 
         member = conn.execute(
@@ -248,13 +262,15 @@ def add_member():
         ).fetchone()
 
         conn.commit()
-        add_log_entry(group_key, username, f"Joined group '{group_name}'", datetime.now().timestamp())
+        add_log_entry(group_key, username,
+                      f"Joined group '{group_name}'", datetime.now().timestamp())
         return jsonify(dict(member)), 201
 
     except sqlite3.IntegrityError:
         return jsonify({"error": "Database constraint violation occurred."}), 409
     finally:
         conn.close()
+
 
 @app.route("/groups/<group_key>/members/<target_username>/reset-pin", methods=["PUT"])
 def reset_member_pin(group_key, target_username):
@@ -271,7 +287,8 @@ def reset_member_pin(group_key, target_username):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
@@ -281,13 +298,13 @@ def reset_member_pin(group_key, target_username):
     group_id = group["id"]
 
     is_self = requestor_username.lower().strip() == target_username.lower().strip()
-    
+
     if not (is_self or is_admin(group_id, requestor_username, requestor_pin)):
         conn.close()
         return jsonify({"error": "Unauthorized. Action requires admin privileges or matching user."}), 403
 
     member = conn.execute(
-        "SELECT id FROM members WHERE username = ? AND group_id = ?", 
+        "SELECT id FROM members WHERE username = ? AND group_id = ?",
         (target_username.lower().strip(), group_id)
     ).fetchone()
 
@@ -296,13 +313,14 @@ def reset_member_pin(group_key, target_username):
         return jsonify({"error": "Target member not found in this group"}), 404
 
     conn.execute(
-        "UPDATE members SET pin_hash = ? WHERE username = ? AND group_id = ?", 
+        "UPDATE members SET pin_hash = ? WHERE username = ? AND group_id = ?",
         (hash_pin(new_pin), target_username.lower().strip(), group_id)
     )
     conn.commit()
     conn.close()
 
     return jsonify({"message": "Pin reset successfully for user " + target_username})
+
 
 @app.route("/groups/<group_key>/members", methods=["GET"])
 def get_members(group_key):
@@ -314,7 +332,8 @@ def get_members(group_key):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
@@ -340,6 +359,7 @@ def get_members(group_key):
 
     return jsonify([dict(m) for m in members])
 
+
 @app.route("/groups/<group_key>/members/status", methods=["PUT"])
 def update_member_status(group_key):
     requestor_username = request.headers.get("X-Username")
@@ -357,7 +377,8 @@ def update_member_status(group_key):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
@@ -383,7 +404,8 @@ def update_member_status(group_key):
         (new_job, new_location, member["id"])
     )
     conn.commit()
-    add_log_entry(group_key, requestor_username, f"Set own status to '{new_job}/{new_location}'", datetime.now().timestamp())
+    add_log_entry(group_key, requestor_username,
+                  f"Set own status to '{new_job}/{new_location}'", datetime.now().timestamp())
     conn.close()
 
     return jsonify({
@@ -391,6 +413,7 @@ def update_member_status(group_key):
         "job": new_job,
         "location": new_location
     }), 200
+
 
 @app.route("/groups/<group_key>/members/role", methods=["PUT"])
 def update_member_role(group_key):
@@ -409,7 +432,8 @@ def update_member_role(group_key):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
@@ -430,19 +454,21 @@ def update_member_role(group_key):
     if not member:
         conn.close()
         return jsonify({"error": "Invalid credentials for this group"}), 403
-    
+
     conn.execute(
         "UPDATE members SET role = ? WHERE id = ?",
         (role, member["id"])
     )
     conn.commit()
-    add_log_entry(group_key, requestor_username, f"Set {name_to_change}'s role to '{role}'", datetime.now().timestamp())
+    add_log_entry(group_key, requestor_username,
+                  f"Set {name_to_change}'s role to '{role}'", datetime.now().timestamp())
     conn.close()
 
     return jsonify({
         "message": "Status updated successfully",
         "role": role
     }), 200
+
 
 @app.route("/groups/<group_key>/members/change-admin", methods=["PUT"])
 def change_admin(group_key):
@@ -462,7 +488,8 @@ def change_admin(group_key):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
@@ -483,19 +510,21 @@ def change_admin(group_key):
     if not member:
         conn.close()
         return jsonify({"error": "Invalid credentials for this group"}), 403
-    
+
     conn.execute(
         "UPDATE members SET is_admin = ? WHERE id = ?",
         (admin_status, member["id"])
     )
     conn.commit()
-    add_log_entry(group_key, requestor_username, f"Changed {target_username}'s admin status to '{admin_status}'", datetime.now().timestamp())
+    add_log_entry(group_key, requestor_username,
+                  f"Changed {target_username}'s admin status to '{admin_status}'", datetime.now().timestamp())
     conn.close()
 
     return jsonify({
         "message": "Admin status updated successfully",
         "is_admin": admin_status
     }), 200
+
 
 @app.route("/groups/<group_key>/logs", methods=["GET"])
 def fetch_logs(group_key):
@@ -504,15 +533,16 @@ def fetch_logs(group_key):
 
     if not requestor_username or not requestor_pin:
         return jsonify({"error": "Missing X-Username or X-Pin header"}), 400
-    
+
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
 
     if not group:
         return jsonify({"error": "Group not found"}), 404
-    
+
     member = conn.execute(
         "SELECT id, job, location FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
         (group["id"], requestor_username.lower().strip(), hash_pin(requestor_pin))
@@ -521,13 +551,14 @@ def fetch_logs(group_key):
     if not member:
         conn.close()
         return jsonify({"error": "Invalid credentials for this group"}), 403
-    
+
     group_log = conn.execute(
         "SELECT * FROM logs WHERE group_key = ?", (group_key.upper().strip(),)
     ).fetchall()
     conn.close()
-    
+
     return jsonify([dict(row) for row in group_log])
+
 
 @app.route("/groups/<group_key>/admin-check", methods=["GET"])
 def check_admin_status(group_key):
@@ -539,7 +570,8 @@ def check_admin_status(group_key):
 
     conn = get_db_connection()
     group = conn.execute(
-        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper().strip(),)
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
     ).fetchone()
     conn.close()
 
@@ -547,6 +579,7 @@ def check_admin_status(group_key):
         return jsonify({"error": "Group not found"}), 404
 
     return jsonify({"is_admin": is_admin(group["id"], requestor_user, requestor_pin)}), 200
+
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -570,13 +603,14 @@ def login():
         """,
         (group_key.upper().strip(), username.lower().strip(), hash_pin(pin)),
     ).fetchone()
-    
+
     conn.close()
 
     if member:
         return jsonify(dict(member)), 200
     else:
         return jsonify({"error": "Invalid username or PIN"}), 401
+
 
 @app.route("/tba/teaminfo/<int:team_number>", methods=["GET"])
 def team_info(team_number):
@@ -590,6 +624,7 @@ def team_info(team_number):
                             str(team_number), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
 
+
 @app.route("/tba/avatar/<int:team_number>", methods=["GET"])
 def team_avatar(team_number):
     if testing:
@@ -602,6 +637,7 @@ def team_avatar(team_number):
                             "/media/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
 
+
 @app.route("/tba/<int:team_number>/events", methods=["GET"])
 def get_events(team_number):
     if testing:
@@ -610,10 +646,11 @@ def get_events(team_number):
         with open("./example responses/2077events.json", "r") as file:
             data = json.load(file)
         return jsonify(data), 200
-    
+
     response = requests.get("https://www.thebluealliance.com/api/v3/team/frc" + str(team_number) +
                             "/events/" + str(datetime.now().year), headers={"X-TBA-Auth-Key": tba_key.strip()})
     return jsonify(response.json()), response.status_code
+
 
 @app.route("/tba/matches/<event_key>/<int:team_number>", methods=["GET"])
 def get_matches(event_key, team_number):
@@ -626,11 +663,34 @@ def get_matches(event_key, team_number):
             data = json.load(file)
         return jsonify(data), 200
 
-    response = requests.get(
-        f"https://www.thebluealliance.com/api/v3/team/frc{team_number}/event/{event_key}/matches",
-        headers={"X-TBA-Auth-Key": tba_key.strip()},
-    )
+    response = requests.get(f"https://www.thebluealliance.com/api/v3/team/frc{team_number}/event/{event_key}/matches",
+                            headers={"X-TBA-Auth-Key": tba_key.strip()},
+                            )
     return jsonify(response.json()), response.status_code
+
+
+@app.route("/tba/event/<event_key>/stream", methods=["GET"])
+def get_current_stream(event_key):
+    response = requests.get(f"https://www.thebluealliance.com/api/v3/event/{event_key}",
+                            headers={"X-TBA-Auth-Key": tba_key.strip()})
+
+    if response.status_code == 200:
+        resp_json = response.json()
+        streams = []
+        stream_counter = 1
+
+        for webcast in resp_json.get("webcasts", []):
+            if webcast.get("type") == "youtube":
+                stream_name = "Stream - " + str(webcast.get("date"))
+                streams.append({
+                    "name": stream_name,
+                    "video_id": webcast.get("channel")
+                })
+                stream_counter += 1
+
+        return jsonify(streams)
+
+    return jsonify({"streams": []})
 
 def run_first_run():
     print(Style.BRIGHT + Fore.GREEN + "First run setup")
@@ -662,6 +722,7 @@ def run_first_run():
     else:
         run_first_run()
 
+
 def init_config():
     global inst_name, db_name, port, tba_key
     if not os.path.exists("./about.json"):
@@ -675,6 +736,7 @@ def init_config():
             port = data["port"]
             tba_key = data["tba api key"]
 
+
 def main():
     init_config()
     init_db()
@@ -682,6 +744,7 @@ def main():
           "Laser Tracker Server v" + VERSION + ": " + inst_name)
 
     app.run(port=port, host="0.0.0.0")
+
 
 if __name__ == "__main__":
     main()
