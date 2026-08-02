@@ -36,6 +36,7 @@ limiter = Limiter(
     default_limits=["200 per minute"]
 )
 
+
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
 
@@ -99,7 +100,19 @@ def init_db():
                 group_key TEXT NOT NULL,
                 username TEXT NOT NULL,
                 action TEXT NOT NULL,
-                timestamp INTERGER NOT NULL
+                timestamp INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batteries (
+                group_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                matches_used INTEGER NOT NULL,
+                notes TEXT,
+                status_timestamp INTEGER NOT NULL
             )
             """
         )
@@ -253,7 +266,7 @@ def add_member():
             """
             INSERT INTO members (group_id, username, display_name, pin_hash, job, role, location, is_admin)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (group_id, username.lower().strip(), display_name,
              hash_pin(pin), job, role, location, 0),
         )
@@ -276,6 +289,57 @@ def add_member():
 
     except sqlite3.IntegrityError:
         return jsonify({"error": "Database constraint violation occurred."}), 409
+    finally:
+        conn.close()
+
+
+@app.route("/groups/<group_key>/members/<target_username>", methods=["DELETE"])
+def remove_member(group_key, target_username):
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id, group_name FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    is_self = requestor_username.lower().strip() == target_username.lower().strip()
+
+    if not (is_self or is_admin(group_id, requestor_username, requestor_pin)):
+        conn.close()
+        return jsonify({"error": "Unauthorized. Action requires admin privileges or matching user."}), 403
+
+    member = conn.execute(
+        "SELECT id FROM members WHERE username = ? AND group_id = ?",
+        (target_username.lower().strip(), group_id)
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Target member not found in this group"}), 404
+
+    try:
+        conn.execute(
+            "DELETE FROM members WHERE username = ? AND group_id = ?",
+            (target_username.lower().strip(), group_id)
+        )
+        conn.commit()
+        add_log_entry(group_key, requestor_username,
+                      f"Removed member '{target_username}'", datetime.now().timestamp())
+        return jsonify({"message": f"Member {target_username} removed successfully"}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -408,7 +472,7 @@ def update_member_status(group_key):
     new_location = location if location is not None else member["location"]
 
     conn.execute(
-        """UPDATE members SET job = ?, location = ? WHERE id = ?""",
+        "UPDATE members SET job = ?, location = ? WHERE id = ?",
         (new_job, new_location, member["id"])
     )
     conn.commit()
@@ -620,6 +684,236 @@ def login():
         return jsonify({"error": "Invalid username or PIN"}), 401
 
 
+@app.route("/groups/<group_key>/batteries", methods=["GET"])
+def get_batteries(group_key):
+    data = request.json
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Missing X-Username or X-Pin header"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchone()
+
+    if not group:
+        return jsonify({"error": "Group not found"}), 404
+
+    member = conn.execute(
+        "SELECT * FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
+        (group["id"], requestor_username.lower().strip(), hash_pin(requestor_pin))
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+
+    batteries = conn.execute(
+        "SELECT * FROM batteries WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchall()
+    conn.close()
+
+    return jsonify([dict(row) for row in batteries])
+
+
+@app.route("/groups/<group_key>/batteries/status", methods=["PUT"])
+def update_battery_status(group_key):
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    data = request.json
+    name = data.get("name")
+    status = data.get("status")
+    matches_used = data.get("matches_used")
+    notes = data.get("notes")
+    timestamp = datetime.now().timestamp()
+
+    if not name:
+        return jsonify({"error": "Name required"}), 400
+
+    if not any([status, matches_used, notes]):
+        return jsonify({"error": "At least one status field (job, location) must be provided to update"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    member = conn.execute(
+        "SELECT * FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
+        (group_id, requestor_username.lower().strip(), hash_pin(requestor_pin))
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+
+    battery = conn.execute(
+        "SELECT status, matches_used, notes FROM batteries WHERE group_key = ? AND name = ?",
+        (group_key.upper().strip(), name)
+    ).fetchone()
+
+    if not battery:
+        conn.close()
+        return jsonify({"error": "Invalid battery"}), 404
+
+    new_status = status if status is not None else battery["status"]
+    new_matches_used = matches_used if matches_used is not None else battery["matches_used"]
+    new_notes = notes if notes is not None else battery["notes"]
+
+    conn.execute(
+        "UPDATE batteries SET status = ?, matches_used = ?, notes = ?, status_timestamp = ? WHERE name = ? and group_key = ?",
+        (new_status, new_matches_used, new_notes, timestamp, name, group_key)
+    )
+    conn.commit()
+    add_log_entry(group_key, requestor_username,
+                  f"Set battery {name}'s status to {new_status}/{new_matches_used}/{new_notes}", timestamp)
+    conn.close()
+
+    return jsonify({
+        "message": "Status updated successfully",
+        "status": new_status,
+        "matches_used": new_matches_used,
+        "notes": new_notes
+    }), 200
+
+
+@app.route("/groups/<group_key>/batteries/add", methods=["POST"])
+def add_battery(group_key):
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+    data = request.json
+    name = data.get("name")
+    status = data.get("status")
+    matches_used = data.get("matches_used")
+    notes = data.get("notes")
+    timestamp = datetime.now().timestamp()
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    if not all([name, status, matches_used, notes]):
+        return jsonify({"error": "At least one status field (job, location) must be provided to update"}), 400
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    member = conn.execute(
+        "SELECT * FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
+        (group_id, requestor_username.lower().strip(), hash_pin(requestor_pin))
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+
+    try:
+        existing_battery = conn.execute(
+            "SELECT * FROM batteries WHERE group_key = ? AND name = ?",
+            (group_key, name)
+        ).fetchone()
+
+        if existing_battery:
+            conn.close()
+            return jsonify({"error": f"The battery name '{name}' has already been taken within this group."}), 409
+
+        conn.execute(
+            """
+            INSERT INTO batteries (group_key, name, status, matches_used, notes, status_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (group_key, name, status, matches_used, notes, timestamp),
+        )
+
+        conn.commit()
+        add_log_entry(group_key, requestor_username,
+                      f"Added battery '{name}'", timestamp)
+        return jsonify({"battery": "added", "blue_banner": "won"}), 201
+
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Database constraint violation occurred."}), 409
+    finally:
+        conn.close()
+
+
+@app.route("/groups/<group_key>/batteries/<battery_name>", methods=["DELETE"])
+def remove_battery(group_key, battery_name):
+    requestor_username = request.headers.get("X-Username")
+    requestor_pin = request.headers.get("X-Pin")
+
+    if not requestor_username or not requestor_pin:
+        return jsonify({"error": "Authentication required via X-Username and X-Pin headers"}), 401
+
+    conn = get_db_connection()
+    group = conn.execute(
+        "SELECT id FROM groups WHERE group_key = ?", (group_key.upper(
+        ).strip(),)
+    ).fetchone()
+
+    if not group:
+        conn.close()
+        return jsonify({"error": "Group not found"}), 404
+
+    group_id = group["id"]
+
+    member = conn.execute(
+        "SELECT * FROM members WHERE group_id = ? AND username = ? AND pin_hash = ?",
+        (group_id, requestor_username.lower().strip(), hash_pin(requestor_pin))
+    ).fetchone()
+
+    if not member:
+        conn.close()
+        return jsonify({"error": "Invalid credentials for this group"}), 403
+
+    battery = conn.execute(
+        "SELECT name FROM batteries WHERE group_key = ? AND name = ?",
+        (group_key.upper().strip(), battery_name)
+    ).fetchone()
+
+    if not battery:
+        conn.close()
+        return jsonify({"error": "Battery not found"}), 404
+
+    try:
+        conn.execute(
+            "DELETE FROM batteries WHERE group_key = ? AND name = ?",
+            (group_key.upper().strip(), battery_name)
+        )
+        conn.commit()
+
+        add_log_entry(group_key, requestor_username,
+                      f"Removed battery '{battery_name}'", datetime.now().timestamp())
+        return jsonify({"message": f"Battery '{battery_name}' removed successfully"}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/tba/teaminfo/<int:team_number>", methods=["GET"])
 @limiter.limit("30 per minute")
 def team_info(team_number):
@@ -704,6 +998,7 @@ def get_current_stream(event_key):
         return jsonify(streams)
 
     return jsonify({"streams": []})
+
 
 def run_first_run():
     print(Style.BRIGHT + Fore.GREEN + "First run setup")
