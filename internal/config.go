@@ -1,4 +1,4 @@
-package config
+package internal
 
 import (
 	"bufio"
@@ -12,13 +12,13 @@ import (
 )
 
 type Config struct {
-	InstanceName string `json:"instance_name"`
-	Version      string `json:"version"`
-	DatabaseURL  string `json:"database_url"`
-	Port         int    `json:"port"`
-	TBAAPIKey    string `json:"tba_api_key"`
-	JWTSecret    string `json:"jwt_secret"`
-	IsTesting    bool   `json:"is_testing"`
+	InstanceName string
+	Version      string
+	DatabaseURL  string
+	Port         int
+	TBAAPIKey    string
+	JWTSecret    string
+	IsTesting    bool
 }
 
 func LoadConfig() (*Config, error) {
@@ -67,17 +67,13 @@ func FirstRunSetup() error {
 	fmt.Print("The Blue Alliance APIv3 key: ")
 	tbaKey, _ := reader.ReadString('\n')
 
-	fmt.Print("JWT Secret (leave blank to auto-generate): ")
-	jwtSecret, _ := reader.ReadString('\n')
-	jwtSecret = strings.TrimSpace(jwtSecret)
-	if jwtSecret == "" {
-		s, err := GenerateRandomSecret(32)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		} else {
-			jwtSecret = s
-		}
+	jwtSecret := "hi, I am a secret. My background consists of secrets, and jwt."
+	s, err := GenerateRandomSecret(32)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	} else {
+		jwtSecret = s
 	}
 
 	cfg := Config{

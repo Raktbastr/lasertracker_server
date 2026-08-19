@@ -8,15 +8,15 @@ import (
 )
 
 type Claims struct {
-	UserID   int    `json:"user_id"`
-	Username string `json:"username"`
-	GroupID  int    `json:"group_id"`
-	GroupKey string `json:"group_key"`
-	IsAdmin  bool   `json:"is_admin"`
+	UserID   int
+	Username string
+	GroupID  int
+	GroupKey string
+	IsAdmin  bool
 	jwt.RegisteredClaims
 }
 
-func GenerateToken(userID int, username string, groupID int, groupKey string, isAdmin bool, secret string) (string, error) {
+func GenerateToken(userID int, username string, groupID int, groupKey string, secret string) (string, error) {
 	expirationTime := time.Now().Add(96 * time.Hour)
 
 	claims := &Claims{
@@ -24,7 +24,6 @@ func GenerateToken(userID int, username string, groupID int, groupKey string, is
 		Username: username,
 		GroupID:  groupID,
 		GroupKey: groupKey,
-		IsAdmin:  isAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
